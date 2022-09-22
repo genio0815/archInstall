@@ -1,0 +1,93 @@
+# lookup available keymaps
+localectl list-keymaps | grep de
+
+# load keymap
+loadkeys de-latin1
+
+# enable wlan - enter iwctl
+=> station wlan0 connect VBC_GUEST
+=> pw
+
+# creat pw
+passwd
+
+# check ip
+
+# on remote connect to
+ssh root@ip
+
+# check current partitions
+lsblk
+
+# clear old part table if needed and create new one
+gdisk ...
+
+# create fat32 file system for uefi part
+mkfs.fat -F32 /dev/nvme0n1p1
+
+# adopt btrfs settings + luks encryption for sha512 cipher
+cryptsetup --cipher aes-xts-plain64 --hash sha512 --use-random --verify-passphrase luksFormat /dev/nvme0n1p2
+
+# => encrypted, open again
+cryptsetup luksOpen /dev/nvme0n1p2 root
+
+# create btrfs
+mkfs.btrfs /dev/mapper/root
+
+# mount and create subvolumen
+mount /dev/mapper/root /mnt
+cd /mnt
+
+btrfs subvolume create @
+btrfs subvolume create @home
+
+# unmount and remount with proper options
+cd
+umount /mnt
+
+mount -o noatime,space_cache=v2,compress=zstd,ssd,discard=async,subvol=@ /dev/mapper/root /mnt
+mkdir /mnt/{boot,home}
+
+mount -o noatime,space_cache=v2,compress=zstd,ssd,discard=async,subvol=@home /dev/mapper/root /mnt/home
+mount /dev/nvme0n1p1 /mnt/boot
+
+pacstrap /mnt base linux linux-firmware git vim intel-ucode
+
+genfstab -U /mnt >> /mnt/etc/fstab
+
+arch-chroot /mnt
+
+sed -i 's|MODULES=()|MODULES=(btrfs)|' /etc/mkinitcpio.conf
+sed -i 's|block filesystems|block encrypt filesystems|' /etc/mkinitcpio.conf
+
+mkinitcpio -p linux
+
+ln -sf /usr/share/zoneinfo/Europe/Vienna /etc/localtime
+hwclock --systohc
+
+sed -i 's|#de_AT|de_AT|g' /etc/locale.gen
+locale-gen
+
+...
+
+bootctl --path=/boot install
+echo "timeout 5" > /boot/loader/loader.conf
+echo "default arch" >> /boot/loader/loader.conf
+
+echo "title Arch Linux" > /boot/loader/entries/arch.conf
+echo "linux /vmlinuz-linux" >> /boot/loader/entries/arch.conf
+echo "initrd /intel-ucode.img" >> /boot/loader/entries/arch.conf
+echo "initrd /initramfs-linux.img" >> /boot/loader/entries/arch.conf
+
+# getting UUID of encrypted device
+id1=$( blkid /dev/nvme0n1p2 | awk -F\" '{print $2}')
+id2=$( blkid /dev/mapper/root | awk -F\" '{print $2}')
+
+echo "options cryptdevice=UUID=$id1:root root=UUID=$id2 rootflags=subvol=@ rw" >> /boot/loader/entries/arch.conf
+
+cp /boot/loader/entries/arch.conf /boot/loader/entries/arch-fallback.conf
+sed -i 's|initramfs-linux|initramfs-linux-fallback|' /boot/loader/entries/arch-fallback.conf
+
+exit
+umount -R /mnt
+
